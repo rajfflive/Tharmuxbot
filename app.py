@@ -44,7 +44,7 @@ USER_DATA_DIR = os.path.join(BASE_DIR, "user_data")
 LOG_FILE = "bot.log"
 
 # MongoDB Configuration (Free MongoDB Atlas)
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://rajfflive:rajfflive123@cluster0.xkjjy.mongodb.net/?retryWrites=true&w=majority")
+MONGO_URI = os.environ.get("MONGO_URI", "")
 DB_NAME = os.environ.get("DB_NAME", "rajfflive_bot")
 
 # Bot Info
