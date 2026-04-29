@@ -37,7 +37,7 @@ except ImportError:
 
 # ========== CONFIGURATION (Render Environment Variables) ==========
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-MAIN_ADMIN_ID = int(os.environ.get("MAIN_ADMIN_ID", 7981894574)
+MAIN_ADMIN_ID = int(os.environ.get("MAIN_ADMIN_ID", (7981894574)
 PORT = int(os.environ.get("PORT", 10000))
 BASE_DIR = os.getcwd()
 USER_DATA_DIR = os.path.join(BASE_DIR, "user_data")
