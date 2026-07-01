@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodeHost — Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">CodeHost</div>
+    <a class="logout-link" href="{{ url_for('logout') }}">Log out</a>
+  </header>
+
+  <main class="container">
+    <div class="page-head">
+      <h1>Projects</h1>
+      <button id="new-project-btn" class="btn primary">+ New project</button>
+    </div>
+
+    <div id="project-grid" class="project-grid">
+      {% for p in projects %}
+      <a class="project-card" href="/projects/{{ p.id }}">
+        <div class="project-card-top">
+          <span class="status-dot {{ 'running' if p.running else 'stopped' }}"></span>
+          <span class="project-name">{{ p.name }}</span>
+        </div>
+        <div class="project-meta">
+          {% if p.github_url %}<span class="tag">GitHub</span>{% endif %}
+          <span class="tag muted">{{ p.entry_file or 'no entry file' }}</span>
+        </div>
+      </a>
+      {% else %}
+      <div class="empty-state">No projects yet. Create your first one.</div>
+      {% endfor %}
+    </div>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script>
+    document.getElementById('new-project-btn').addEventListener('click', async () => {
+      const name = prompt('Project name:', 'My Bot');
+      if (!name) return;
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        window.location.href = '/projects/' + data.id;
+      } else {
+        alert('Could not create project');
+      }
+    });
+  </script>
+</body>
+</html>
