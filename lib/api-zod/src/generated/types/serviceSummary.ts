@@ -6,7 +6,11 @@
  * OpenAPI spec version: 0.2.0
  */
 
-export interface AuthUser {
-  authenticated: boolean;
-  username: string;
+export interface ServiceSummary {
+  id: number;
+  name: string;
+  slug: string;
+  requestCount: number;
+  isActive: boolean;
+  status: string;
 }

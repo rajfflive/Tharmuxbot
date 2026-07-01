@@ -6,7 +6,6 @@
  * OpenAPI spec version: 0.2.0
  */
 
-export interface AuthUser {
-  authenticated: boolean;
-  username: string;
+export interface LoginInput {
+  password: string;
 }
