@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import zipfile
+import socket
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -111,6 +112,7 @@ app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 30
 
 RUNNING = {}
 RUNNING_LOCK = threading.Lock()
+_PORT_LOCK = threading.Lock()
 
 
 # --------------------------------------------------------------------------
@@ -134,11 +136,30 @@ def log_path_for(project_id: str) -> Path:
     return project_dir(project_id) / ".codehost_run.log"
 
 
+def _is_port_free(port: int) -> bool:
+    """Check if a TCP port is available on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
 def _next_free_port() -> int:
-    db = get_mongo()
-    result = db.projects.find_one({}, sort=[("internal_port", -1)], projection={"internal_port": 1})
-    current_max = result["internal_port"] if result and result.get("internal_port") else BASE_PORT - 1
-    return max(current_max + 1, BASE_PORT)
+    """Find a port that is both unassigned in DB and free on the OS."""
+    with _PORT_LOCK:
+        db = get_mongo()
+        used_ports = {
+            p["internal_port"]
+            for p in db.projects.find({}, {"internal_port": 1})
+            if p.get("internal_port")
+        }
+        for port in range(BASE_PORT, BASE_PORT + 1000):
+            if port not in used_ports and _is_port_free(port):
+                return port
+        raise RuntimeError("No free ports available in range 6000–7000")
 
 
 # --------------------------------------------------------------------------
@@ -567,7 +588,12 @@ def _stream_process_output(project_id: str, proc: subprocess.Popen):
         _append_log(project_id, f"[log-reader-error] {exc}")
     finally:
         proc.wait()
-        _append_log(project_id, f"[process exited with code {proc.returncode}]")
+        code = proc.returncode
+        if code == 0:
+            _append_log(project_id, f"[process exited with code {code}]")
+        else:
+            _append_log(project_id, f"[ERROR] Process crashed! Exit code: {code}")
+            _append_log(project_id, f"[ERROR] Scroll up to see the traceback / error details.")
         with RUNNING_LOCK:
             RUNNING.pop(project_id, None)
         _set_status(project_id, "stopped")
@@ -625,8 +651,25 @@ def _run_project_thread(project_id: str, entry_file: str, env_vars: dict, intern
         for line in (npm_install.stdout + npm_install.stderr).splitlines():
             _append_log(project_id, line)
 
+    # Verify port is still free before starting; re-assign if another process grabbed it
+    if not _is_port_free(internal_port):
+        _append_log(project_id, f"[WARN] Port {internal_port} is in use — finding a free port...")
+        try:
+            new_port = _next_free_port()
+            # Update DB so public proxy uses the new port
+            get_mongo().projects.update_one({"_id": project_id}, {"$set": {"internal_port": new_port}})
+            internal_port = new_port
+            run_env["PORT"] = str(internal_port)
+            _append_log(project_id, f"Reassigned to port {internal_port}")
+        except RuntimeError as exc:
+            _append_log(project_id, f"[ERROR] {exc}")
+            with RUNNING_LOCK:
+                RUNNING.pop(project_id, None)
+            _set_status(project_id, "stopped")
+            return
+
     cmd = ["node", entry_file] if entry_file.endswith(".js") else ["python3", entry_file]
-    _append_log(project_id, f"Starting: {' '.join(cmd)}")
+    _append_log(project_id, f"Starting: {' '.join(cmd)} on port {internal_port}")
 
     try:
         proc = subprocess.Popen(
