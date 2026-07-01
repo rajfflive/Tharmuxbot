@@ -20,6 +20,14 @@
     </div>
   </header>
 
+  <div class="public-url-bar">
+    <span class="public-url-label">Public URL</span>
+    <input id="public-url-input" type="text" value="{{ project.public_url }}" readonly />
+    <button id="copy-url-btn" class="btn small">Copy</button>
+    <a id="open-url-btn" class="btn small" href="{{ project.public_url }}" target="_blank" rel="noopener">Open</a>
+    <span class="public-url-hint">Works only while the project is running &mdash; set a custom name in the sidebar.</span>
+  </div>
+
   <main class="project-layout" data-project-id="{{ project.id }}">
     <aside class="sidebar">
       <div class="sidebar-head">
@@ -46,6 +54,13 @@
       </div>
 
       <div class="sidebar-section">
+        <div class="sidebar-section-title">Public URL name</div>
+        <input id="slug-input" type="text" placeholder="my-bot" value="{{ project.slug or '' }}" />
+        <button id="slug-save-btn" class="btn small">Set name</button>
+        <div class="hint">Letters, numbers and dashes only. Changes the public URL above.</div>
+      </div>
+
+      <div class="sidebar-section">
         <div class="sidebar-section-title">Environment Variables</div>
         <div id="env-list"></div>
         <div class="env-row">
@@ -65,17 +80,28 @@
     <section class="editor-pane">
       <div class="editor-tab-bar">
         <span id="current-file-label">No file open</span>
-        <span id="unsaved-dot" class="unsaved-dot hidden"></span>
-        <button id="save-btn" class="btn small">Save (Ctrl+S)</button>
+        <span id="unsaved-dot" class="unsaved-dot hidden" title="Unsaved changes"></span>
+        <span id="save-status" class="save-status"></span>
+        <button id="save-btn" class="btn small primary">Save (Ctrl+S)</button>
       </div>
       <textarea id="code-editor" spellcheck="false" placeholder="Select or create a file to start editing..."></textarea>
     </section>
 
     <section class="terminal-pane">
-      <div class="terminal-head">Logs</div>
+      <div class="terminal-head">
+        <span>Logs</span>
+        <div class="terminal-actions">
+          <label class="errors-only-toggle">
+            <input id="errors-only-toggle" type="checkbox" /> Errors only
+          </label>
+          <button id="clear-logs-btn" class="btn small">Clear</button>
+        </div>
+      </div>
       <pre id="terminal-output"></pre>
     </section>
   </main>
+
+  <div id="toast-container" class="toast-container"></div>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
