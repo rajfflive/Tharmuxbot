@@ -307,6 +307,16 @@ def api_create_project():
 
     internal_port = _next_free_port()
     db = get_mongo()
+
+    # Auto-derive slug from project name so the public URL is human-readable.
+    # e.g. name "My Bot" → slug "my-bot" → /pub/my-bot/
+    slug_base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or project_id
+    slug = slug_base
+    suffix = 1
+    while db.projects.find_one({"slug": slug}):
+        slug = f"{slug_base}-{suffix}"
+        suffix += 1
+
     db.projects.insert_one({
         "_id": project_id,
         "name": name,
@@ -315,7 +325,7 @@ def api_create_project():
         "env": {},
         "status": "stopped",
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "slug": project_id,
+        "slug": slug,
         "internal_port": internal_port,
     })
     return jsonify({"id": project_id, "name": name}), 201
@@ -482,10 +492,23 @@ def api_github_import(project_id):
             if entry_file is None and path.name in RUN_ENTRY_CANDIDATES:
                 entry_file = rel
 
-    get_mongo().projects.update_one(
-        {"_id": project_id},
-        {"$set": {"github_url": repo_url, "entry_file": entry_file or "main.py"}},
-    )
+    db = get_mongo()
+    proj = db.projects.find_one({"_id": project_id}, {"slug": 1})
+    update_fields = {"github_url": repo_url, "entry_file": entry_file or "main.py"}
+
+    # If the project's slug is still its UUID (never manually set), auto-derive
+    # it from the repo name so the public URL becomes human-readable.
+    if proj and proj.get("slug") == project_id:
+        repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
+        slug_base = re.sub(r"[^a-z0-9]+", "-", repo_name.lower()).strip("-")[:40] or project_id
+        slug = slug_base
+        suffix = 1
+        while db.projects.find_one({"slug": slug, "_id": {"$ne": project_id}}):
+            slug = f"{slug_base}-{suffix}"
+            suffix += 1
+        update_fields["slug"] = slug
+
+    db.projects.update_one({"_id": project_id}, {"$set": update_fields})
     return jsonify({"ok": True, "entry_file": entry_file})
 
 
@@ -848,11 +871,28 @@ def _proxy_request(project, subpath, ident):
     return Response(upstream.content, status=upstream.status_code, headers=response_headers)
 
 
+def _proxy_not_found(ident: str):
+    """Helpful 404 instead of a blank Flask error page."""
+    host = request.host_url.rstrip("/")
+    body = (
+        f"⚠️  No project found at /pub/{ident}/\n\n"
+        f"Possible reasons:\n"
+        f"  1. URL name not set yet.\n"
+        f"     → Open CodeHost admin → your project → Settings\n"
+        f"       → set 'Public URL name' to '{ident}' and click Set.\n\n"
+        f"  2. Project created before auto-slug was added (URL uses UUID).\n"
+        f"     → Go to {host}/admin → open your project\n"
+        f"       → the correct URL is shown in the URL bar at the top.\n\n"
+        f"  3. Typo in the URL — double-check spelling.\n"
+    )
+    return Response(body, status=404, mimetype="text/plain")
+
+
 @app.route("/pub/<ident>/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def public_proxy_root(ident):
     project = _find_project_by_ident(ident)
     if not project:
-        abort(404)
+        return _proxy_not_found(ident)
     return _proxy_request(project, "", ident)
 
 
@@ -860,7 +900,7 @@ def public_proxy_root(ident):
 def public_proxy(ident, subpath):
     project = _find_project_by_ident(ident)
     if not project:
-        abort(404)
+        return _proxy_not_found(ident)
     return _proxy_request(project, subpath, ident)
 
 
