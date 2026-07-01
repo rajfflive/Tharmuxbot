@@ -35,7 +35,12 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / "data"))
 PROJECTS_DIR = DATA_DIR / "projects"
 
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "change-me-admin-key")
+# Accept ADMIN_KEY or ADMIN_PASSWORD — both work
+ADMIN_KEY = (
+    os.environ.get("ADMIN_KEY")
+    or os.environ.get("ADMIN_PASSWORD")
+    or "change-me-admin-key"
+)
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
 
 MAX_LOG_BYTES = 2 * 1024 * 1024
@@ -984,6 +989,13 @@ def _proxy_request(project, subpath, ident):
                 response_headers.append(("Location", upstream.headers.get("Location", v)))
                 seen.add("location")
             continue
+        if kl == "set-cookie":
+            # Fix cookie Path so browser sends it back for /pub/{ident}/...
+            # Without this, hosted-app session cookies are scoped to /admin but
+            # the browser accesses /pub/{ident}/admin → cookies never sent → infinite login loop
+            v = re.sub(r';\s*[Pp]ath=[^;,]+', '; Path=/', v)
+            if 'path=' not in v.lower():
+                v = v.rstrip(';') + '; Path=/'
         response_headers.append((k, v))
 
     content_type = upstream.headers.get("content-type", "")
