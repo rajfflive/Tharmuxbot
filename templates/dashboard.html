@@ -4,55 +4,51 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CodeHost — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
-<body>
-  <header class="topbar">
-    <div class="brand">CodeHost</div>
-    <a class="logout-link" href="{{ url_for('logout') }}">Log out</a>
+<body class="dash-body">
+
+  <header class="dash-topbar">
+    <div class="dash-brand">
+      <span class="dash-brand-icon">⚡</span>
+      <span>CodeHost</span>
+    </div>
+    <a class="dash-logout" href="{{ url_for('logout') }}">Log out</a>
   </header>
 
-  <main class="container">
-    <div class="page-head">
+  <main class="dash-main">
+    <div class="dash-header">
       <h1>Projects</h1>
-      <button id="new-project-btn" class="btn primary">+ New project</button>
+      <button id="new-project-btn" class="dash-new-btn">
+        <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M6.5 1v11M1 6.5h11"/></svg>
+        New project
+      </button>
     </div>
 
-    <div id="project-grid" class="project-grid">
+    <div class="project-grid">
       {% for p in projects %}
       <a class="project-card" href="/projects/{{ p.id }}">
-        <div class="project-card-top">
-          <span class="status-dot {{ 'running' if p.running else 'stopped' }}"></span>
-          <span class="project-name">{{ p.name }}</span>
+        <div class="card-top">
+          <span class="card-dot {{ 'running' if p.running else 'stopped' }}"></span>
+          <span class="card-name">{{ p.name }}</span>
         </div>
-        <div class="project-meta">
-          {% if p.github_url %}<span class="tag">GitHub</span>{% endif %}
-          <span class="tag muted">{{ p.entry_file or 'no entry file' }}</span>
+        <div class="card-meta">
+          {% if p.github_url %}<span class="badge badge-accent">GitHub</span>{% endif %}
+          <span class="badge badge-muted">{{ p.entry_file or 'no entry' }}</span>
+          {% if p.running %}<span class="badge" style="background:var(--green-dim);color:var(--green)">Running</span>{% endif %}
         </div>
       </a>
       {% else %}
-      <div class="empty-state">No projects yet. Create your first one.</div>
+      <div class="empty-state">
+        <div class="empty-state-icon">🚀</div>
+        <p>No projects yet.<br>Create your first one to get started.</p>
+      </div>
       {% endfor %}
     </div>
   </main>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>
-  <script>
-    document.getElementById('new-project-btn').addEventListener('click', async () => {
-      const name = prompt('Project name:', 'My Bot');
-      if (!name) return;
-      const res = await fetch('/api/projects', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        window.location.href = '/projects/' + data.id;
-      } else {
-        alert('Could not create project');
-      }
-    });
-  </script>
 </body>
 </html>

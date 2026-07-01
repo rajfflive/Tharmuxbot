@@ -4,135 +4,209 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{{ project.name }} — CodeHost</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
 </head>
 <body>
+
+  <!-- ════════════════════ TOP BAR ════════════════════ -->
   <header class="topbar">
-    <div class="brand"><a href="/">CodeHost</a></div>
-    <div class="topbar-center">
-      <span class="project-title" id="project-title-display">{{ project.name }}</span>
+    <a class="brand" href="/">
+      <span class="brand-icon">⚡</span>
+      <span class="brand-text">CodeHost</span>
+    </a>
+
+    <div class="topbar-project">
+      <span id="run-dot" class="run-dot {{ 'active' if project.running else '' }}"></span>
+      <span class="topbar-project-name">{{ project.name }}</span>
     </div>
-    <div class="topbar-actions">
-      <span id="run-status" class="status-pill {{ 'running' if project.running else 'stopped' }}">
-        <span class="status-dot-sm"></span>{{ 'Running' if project.running else 'Stopped' }}
-      </span>
-      <button id="run-btn" class="btn primary" {{ 'disabled' if project.running else '' }}>&#9654; Run</button>
-      <button id="stop-btn" class="btn danger" {{ '' if project.running else 'disabled' }}>&#9632; Stop</button>
-      <a class="btn" id="download-btn" href="/api/projects/{{ project.id }}/download">&#8595; ZIP</a>
-      <a class="logout-link" href="{{ url_for('logout') }}">Log out</a>
+
+    <div class="topbar-right">
+      <button id="run-btn" class="tbtn tbtn-run" {{ 'disabled' if project.running else '' }}>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><polygon points="2,1 11,6 2,11"/></svg>
+        Run
+      </button>
+      <button id="stop-btn" class="tbtn tbtn-stop" {{ '' if project.running else 'disabled' }}>
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><rect width="10" height="10" rx="2"/></svg>
+        Stop
+      </button>
+      <a id="download-btn" class="tbtn" href="/api/projects/{{ project.id }}/download">
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 1v7M3 6l3 3 3-3M1 10h10"/></svg>
+        ZIP
+      </a>
+      <div class="topbar-divider"></div>
+      <a class="tbtn tbtn-ghost" href="{{ url_for('logout') }}">Log out</a>
     </div>
   </header>
 
-  <div class="public-url-bar">
-    <span class="public-url-label">Public URL</span>
-    <input id="public-url-input" type="text" value="{{ project.public_url }}" readonly />
-    <button id="copy-url-btn" class="btn small">Copy</button>
-    <a id="open-url-btn" class="btn small" href="{{ project.public_url }}" target="_blank" rel="noopener">Open</a>
-    <span id="ping-badge" class="ping-badge" title="Auto-ping status">&#128308; ping off</span>
-    <span class="public-url-hint">Set a custom URL name in the sidebar &rarr; Public URL Name.</span>
+  <!-- ════════════════════ URL BAR ════════════════════ -->
+  <div class="urlbar">
+    <span class="urlbar-label">URL</span>
+    <input id="public-url-input" class="urlbar-input" type="text" value="{{ project.public_url }}" readonly />
+    <button id="copy-url-btn" class="urlbar-btn">Copy</button>
+    <a id="open-url-btn" class="urlbar-btn" href="{{ project.public_url }}" target="_blank">Open ↗</a>
+    <span id="ping-status" class="ping-pill">● ping —</span>
   </div>
 
-  <main class="project-layout" data-project-id="{{ project.id }}">
+  <!-- ════════════════════ WORKSPACE ════════════════════ -->
+  <div class="workspace" data-project-id="{{ project.id }}">
 
-    <!-- ===== SIDEBAR ===== -->
+    <!-- ── Sidebar ── -->
     <aside class="sidebar">
+      <nav class="sidenav">
+        <button class="sidenav-btn active" data-panel="files" title="Files">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+            <path d="M3 2h6l4 4v9a1 1 0 01-1 1H3a1 1 0 01-1-1V3a1 1 0 011-1z"/>
+            <path d="M9 2v4h4"/>
+          </svg>
+          <span>Files</span>
+        </button>
+        <button class="sidenav-btn" data-panel="env" title="Environment">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+            <circle cx="8" cy="8" r="3"/>
+            <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.1 3.1l1.4 1.4M11.5 11.5l1.4 1.4M3.1 12.9l1.4-1.4M11.5 4.5l1.4-1.4"/>
+          </svg>
+          <span>Env</span>
+        </button>
+        <button class="sidenav-btn" data-panel="settings" title="Settings">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+            <circle cx="8" cy="8" r="2.5"/>
+            <path d="M8 1v1.5M8 13.5V15M1 8h1.5M13.5 8H15M2.9 2.9l1.1 1.1M12 12l1.1 1.1M2.9 13.1L4 12M12 4l1.1-1.1"/>
+          </svg>
+          <span>Settings</span>
+        </button>
+      </nav>
 
-      <!-- Section tabs -->
-      <div class="sidebar-tabs">
-        <button class="stab active" data-tab="files">Files</button>
-        <button class="stab" data-tab="env">Env</button>
-        <button class="stab" data-tab="settings">Settings</button>
-      </div>
-
-      <!-- FILES TAB -->
-      <div class="stab-panel active" id="tab-files">
+      <!-- FILES PANEL -->
+      <div class="panel active" id="panel-files">
+        <div class="panel-head">
+          <span class="panel-title">Project Files</span>
+          <div class="panel-actions">
+            <button id="new-file-btn" class="icon-btn" title="New file">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 2v10M2 7h10"/></svg>
+            </button>
+            <label class="icon-btn" title="Upload files">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M7 10V3M4 6l3-3 3 3M2 11h10"/></svg>
+              <input id="upload-input" type="file" multiple hidden />
+            </label>
+          </div>
+        </div>
         <ul id="file-list" class="file-list"></ul>
-        <div class="sidebar-buttons">
-          <button id="new-file-btn" class="btn small">+ New file</button>
-          <label class="btn small file-upload-label">
-            Upload
-            <input id="upload-input" type="file" multiple hidden />
-          </label>
+        <div id="file-list-empty" class="panel-empty" style="display:none">
+          No files yet. Click + to create one.
         </div>
       </div>
 
-      <!-- ENV TAB -->
-      <div class="stab-panel" id="tab-env">
-        <p class="hint" style="margin-bottom:8px">Saved to MongoDB — persists across restarts.</p>
-        <div id="env-list"></div>
-        <div class="env-add-row">
-          <input id="env-key" type="text" placeholder="KEY" />
-          <input id="env-value" type="text" placeholder="value" />
-          <button id="env-add-btn" class="btn small primary">Add</button>
+      <!-- ENV PANEL -->
+      <div class="panel" id="panel-env">
+        <div class="panel-head">
+          <span class="panel-title">Environment</span>
+          <button id="env-save-btn" class="pill-btn" title="Save to MongoDB">Save</button>
         </div>
-        <button id="env-save-btn" class="btn small" style="margin-top:6px;width:100%">Save all</button>
+        <div class="env-note">Saved to MongoDB — survives restarts.</div>
+        <div id="env-list" class="env-list"></div>
+        <div class="env-add">
+          <input id="env-key" type="text" placeholder="KEY" class="env-key-input" />
+          <input id="env-value" type="text" placeholder="value" class="env-val-input" />
+          <button id="env-add-btn" class="pill-btn pill-btn-accent">Add</button>
+        </div>
       </div>
 
-      <!-- SETTINGS TAB -->
-      <div class="stab-panel" id="tab-settings">
-        <div class="settings-group">
-          <div class="settings-label">Public URL Name</div>
-          <input id="slug-input" type="text" placeholder="my-bot" value="{{ project.slug or '' }}" />
-          <button id="slug-save-btn" class="btn small">Set name</button>
-          <div class="hint">Letters, numbers and dashes only.</div>
+      <!-- SETTINGS PANEL -->
+      <div class="panel" id="panel-settings">
+        <div class="panel-head">
+          <span class="panel-title">Settings</span>
         </div>
 
-        <div class="settings-group">
-          <div class="settings-label">Entry File</div>
-          <input id="entry-file" type="text" placeholder="main.py" value="{{ project.entry_file or '' }}" />
-          <button id="entry-save-btn" class="btn small">Save</button>
+        <div class="settings-section">
+          <label class="settings-label">Public URL name</label>
+          <div class="settings-row">
+            <input id="slug-input" type="text" placeholder="my-bot" value="{{ project.slug or '' }}" />
+            <button id="slug-save-btn" class="pill-btn">Set</button>
+          </div>
+          <p class="settings-hint">Lowercase, letters and dashes only.</p>
         </div>
 
-        <div class="settings-group">
-          <div class="settings-label">GitHub Import</div>
-          <input id="github-url" type="text" placeholder="https://github.com/user/repo" />
-          <button id="github-import-btn" class="btn small">Import repo</button>
+        <div class="settings-section">
+          <label class="settings-label">Entry file</label>
+          <div class="settings-row">
+            <input id="entry-file" type="text" placeholder="main.py" value="{{ project.entry_file or '' }}" />
+            <button id="entry-save-btn" class="pill-btn">Save</button>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <label class="settings-label">GitHub import</label>
+          <div class="settings-row">
+            <input id="github-url" type="text" placeholder="https://github.com/user/repo" {% if project.github_url %}value="{{ project.github_url }}"{% endif %} />
+            <button id="github-import-btn" class="pill-btn">Import</button>
+          </div>
           {% if project.github_url %}
-          <div class="hint">Linked: {{ project.github_url }}</div>
+          <p class="settings-hint linked">🔗 {{ project.github_url }}</p>
           {% endif %}
         </div>
 
-        <div class="settings-group danger-zone">
-          <div class="settings-label">Danger Zone</div>
-          <button id="delete-project-btn" class="btn danger small">Delete project</button>
+        <div class="settings-section settings-danger">
+          <label class="settings-label danger-label">Danger zone</label>
+          <button id="delete-project-btn" class="pill-btn pill-btn-danger">Delete project</button>
         </div>
       </div>
-
     </aside>
 
-    <!-- ===== EDITOR ===== -->
-    <section class="editor-pane">
-      <div class="editor-tab-bar">
-        <span id="current-file-label" class="current-file-label">No file open</span>
-        <span id="unsaved-dot" class="unsaved-dot hidden" title="Unsaved changes"></span>
-        <span id="save-status" class="save-status"></span>
-        <button id="close-file-btn" class="btn small icon-btn" title="Close file" style="display:none">&#x2715;</button>
-        <button id="save-btn" class="btn small primary">Save (Ctrl+S)</button>
-      </div>
-      <textarea id="code-editor" spellcheck="false" placeholder="Select or create a file to start editing..."></textarea>
-    </section>
+    <!-- ── Main content (logs default, editor when file open) ── -->
+    <main class="main">
 
-    <!-- ===== LOGS ===== -->
-    <section class="terminal-pane">
-      <div class="terminal-head">
-        <span class="terminal-title">&#128196; Logs</span>
-        <div class="terminal-actions">
-          <label class="errors-only-toggle" title="Show only errors and warnings">
-            <input id="errors-only-toggle" type="checkbox" /> Errors only
-          </label>
-          <label class="errors-only-toggle" title="Auto-scroll to bottom">
-            <input id="autoscroll-toggle" type="checkbox" checked /> Auto-scroll
-          </label>
-          <button id="clear-logs-btn" class="btn small">Clear</button>
+      <!-- LOGS VIEW (default) -->
+      <div class="view active" id="logs-view">
+        <div class="view-bar">
+          <div class="view-bar-left">
+            <span class="view-bar-icon">
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="1" y="1" width="11" height="11" rx="2"/><path d="M4 5h5M4 7.5h3"/></svg>
+            </span>
+            <span class="view-bar-title">Logs</span>
+            <span id="log-count" class="view-bar-badge"></span>
+          </div>
+          <div class="view-bar-right">
+            <label class="toggle-label">
+              <input id="errors-only-toggle" type="checkbox" />
+              <span>Errors only</span>
+            </label>
+            <label class="toggle-label">
+              <input id="autoscroll-toggle" type="checkbox" checked />
+              <span>Auto-scroll</span>
+            </label>
+            <button id="clear-logs-btn" class="view-btn">Clear</button>
+          </div>
         </div>
+        <pre id="terminal-output" class="terminal"></pre>
       </div>
-      <pre id="terminal-output"></pre>
-    </section>
 
-  </main>
+      <!-- EDITOR VIEW (when file selected) -->
+      <div class="view" id="editor-view">
+        <div class="view-bar">
+          <div class="view-bar-left">
+            <button id="back-to-logs-btn" class="back-btn" title="Back to logs">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 2L3 6l4 4"/></svg>
+            </button>
+            <span class="view-bar-icon">
+              <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2 2h5l4 4v7H2z"/><path d="M7 2v4h4"/></svg>
+            </span>
+            <span id="current-file-label" class="view-bar-title file-title">—</span>
+            <span id="unsaved-badge" class="unsaved-badge hidden">●</span>
+          </div>
+          <div class="view-bar-right">
+            <span id="save-status" class="save-status"></span>
+            <button id="save-btn" class="view-btn view-btn-accent">Save  <kbd>Ctrl+S</kbd></button>
+          </div>
+        </div>
+        <textarea id="code-editor" class="editor" spellcheck="false" placeholder="Select a file to start editing..."></textarea>
+      </div>
+
+    </main>
+  </div>
 
   <div id="toast-container" class="toast-container"></div>
-
   <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>
