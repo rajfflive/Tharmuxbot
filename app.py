@@ -818,8 +818,20 @@ def _find_project_by_ident(ident: str):
     return proj
 
 
+def _proc_alive(project_id: str) -> bool:
+    """Return True if the process is in RUNNING and still alive."""
+    with RUNNING_LOCK:
+        entry = RUNNING.get(project_id)
+    if not entry:
+        return False
+    proc = entry.get("proc")
+    return proc is not None and proc.poll() is None
+
+
 def _proxy_request(project, subpath, ident):
-    if project["id"] not in RUNNING:
+    pid = project["id"]
+
+    if pid not in RUNNING:
         return Response(
             "⚠️  This project isn't running right now.\n"
             "Open it in CodeHost and hit ▶ Run, then reload this URL.",
@@ -833,24 +845,46 @@ def _proxy_request(project, subpath, ident):
 
     headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
 
-    try:
-        upstream = requests.request(
-            method=request.method,
-            url=target_url,
-            headers=headers,
-            data=request.get_data(),
-            cookies=request.cookies,
-            allow_redirects=False,
-            timeout=30,
-        )
-    except requests.exceptions.ConnectionError:
+    # Retry a few times to handle slow startup (pip install, Telethon init, etc.)
+    last_conn_err = None
+    for attempt in range(4):
+        try:
+            upstream = requests.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                data=request.get_data(),
+                cookies=request.cookies,
+                allow_redirects=False,
+                timeout=30,
+            )
+            last_conn_err = None
+            break
+        except requests.exceptions.ConnectionError as exc:
+            last_conn_err = exc
+            if attempt < 3:
+                time.sleep(2)
+        except requests.exceptions.Timeout:
+            return Response("⚠️  Upstream project timed out.", status=504, mimetype="text/plain")
+
+    if last_conn_err is not None:
+        # Check whether the process crashed (already exited) or is still starting
+        if not _proc_alive(pid):
+            return Response(
+                "⚠️  Project process crashed during startup — check the logs.\n\n"
+                "Most common causes:\n"
+                "  • Missing environment variables (API_ID, API_HASH, API_KEY, etc.)\n"
+                "    → Open CodeHost → your project → Env tab → add the required vars → re-run.\n"
+                "  • Syntax error or missing dependency in your code.\n"
+                "    → Check the Logs panel in CodeHost for the full error traceback.\n",
+                status=502, mimetype="text/plain",
+            )
         return Response(
-            "⚠️  Project is starting up or not bound to the expected port.\n"
-            "Make sure it listens on 0.0.0.0 and reads the PORT environment variable.",
+            "⚠️  Project is still starting up — port not accepting connections yet.\n"
+            "Wait a few seconds and reload this page.\n\n"
+            "If this persists, check the Logs panel in CodeHost for errors.",
             status=502, mimetype="text/plain",
         )
-    except requests.exceptions.Timeout:
-        return Response("⚠️  Upstream project timed out.", status=504, mimetype="text/plain")
 
     content_type = upstream.headers.get("content-type", "")
     response_headers = [
