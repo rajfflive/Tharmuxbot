@@ -9,13 +9,16 @@
 <body>
   <header class="topbar">
     <div class="brand"><a href="/">CodeHost</a></div>
+    <div class="topbar-center">
+      <span class="project-title" id="project-title-display">{{ project.name }}</span>
+    </div>
     <div class="topbar-actions">
       <span id="run-status" class="status-pill {{ 'running' if project.running else 'stopped' }}">
-        {{ 'running' if project.running else 'stopped' }}
+        <span class="status-dot-sm"></span>{{ 'Running' if project.running else 'Stopped' }}
       </span>
-      <button id="run-btn" class="btn primary">Run</button>
-      <button id="stop-btn" class="btn danger">Stop</button>
-      <a class="btn" id="download-btn" href="/api/projects/{{ project.id }}/download">Download ZIP</a>
+      <button id="run-btn" class="btn primary" {{ 'disabled' if project.running else '' }}>&#9654; Run</button>
+      <button id="stop-btn" class="btn danger" {{ '' if project.running else 'disabled' }}>&#9632; Stop</button>
+      <a class="btn" id="download-btn" href="/api/projects/{{ project.id }}/download">&#8595; ZIP</a>
       <a class="logout-link" href="{{ url_for('logout') }}">Log out</a>
     </div>
   </header>
@@ -25,17 +28,24 @@
     <input id="public-url-input" type="text" value="{{ project.public_url }}" readonly />
     <button id="copy-url-btn" class="btn small">Copy</button>
     <a id="open-url-btn" class="btn small" href="{{ project.public_url }}" target="_blank" rel="noopener">Open</a>
-    <span class="public-url-hint">Works only while the project is running &mdash; set a custom name in the sidebar.</span>
+    <span id="ping-badge" class="ping-badge" title="Auto-ping status">&#128308; ping off</span>
+    <span class="public-url-hint">Set a custom URL name in the sidebar &rarr; Public URL Name.</span>
   </div>
 
   <main class="project-layout" data-project-id="{{ project.id }}">
+
+    <!-- ===== SIDEBAR ===== -->
     <aside class="sidebar">
-      <div class="sidebar-head">
-        <h2>{{ project.name }}</h2>
+
+      <!-- Section tabs -->
+      <div class="sidebar-tabs">
+        <button class="stab active" data-tab="files">Files</button>
+        <button class="stab" data-tab="env">Env</button>
+        <button class="stab" data-tab="settings">Settings</button>
       </div>
 
-      <div class="sidebar-section">
-        <div class="sidebar-section-title">Files</div>
+      <!-- FILES TAB -->
+      <div class="stab-panel active" id="tab-files">
         <ul id="file-list" class="file-list"></ul>
         <div class="sidebar-buttons">
           <button id="new-file-btn" class="btn small">+ New file</button>
@@ -46,59 +56,79 @@
         </div>
       </div>
 
-      <div class="sidebar-section">
-        <div class="sidebar-section-title">GitHub Import</div>
-        <input id="github-url" type="text" placeholder="https://github.com/user/repo.git" />
-        <button id="github-import-btn" class="btn small">Import repo</button>
-        {% if project.github_url %}<div class="hint">Linked: {{ project.github_url }}</div>{% endif %}
-      </div>
-
-      <div class="sidebar-section">
-        <div class="sidebar-section-title">Public URL name</div>
-        <input id="slug-input" type="text" placeholder="my-bot" value="{{ project.slug or '' }}" />
-        <button id="slug-save-btn" class="btn small">Set name</button>
-        <div class="hint">Letters, numbers and dashes only. Changes the public URL above.</div>
-      </div>
-
-      <div class="sidebar-section">
-        <div class="sidebar-section-title">Environment Variables</div>
+      <!-- ENV TAB -->
+      <div class="stab-panel" id="tab-env">
+        <p class="hint" style="margin-bottom:8px">Saved to MongoDB — persists across restarts.</p>
         <div id="env-list"></div>
-        <div class="env-row">
+        <div class="env-add-row">
           <input id="env-key" type="text" placeholder="KEY" />
           <input id="env-value" type="text" placeholder="value" />
-          <button id="env-add-btn" class="btn small">Add</button>
+          <button id="env-add-btn" class="btn small primary">Add</button>
+        </div>
+        <button id="env-save-btn" class="btn small" style="margin-top:6px;width:100%">Save all</button>
+      </div>
+
+      <!-- SETTINGS TAB -->
+      <div class="stab-panel" id="tab-settings">
+        <div class="settings-group">
+          <div class="settings-label">Public URL Name</div>
+          <input id="slug-input" type="text" placeholder="my-bot" value="{{ project.slug or '' }}" />
+          <button id="slug-save-btn" class="btn small">Set name</button>
+          <div class="hint">Letters, numbers and dashes only.</div>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-label">Entry File</div>
+          <input id="entry-file" type="text" placeholder="main.py" value="{{ project.entry_file or '' }}" />
+          <button id="entry-save-btn" class="btn small">Save</button>
+        </div>
+
+        <div class="settings-group">
+          <div class="settings-label">GitHub Import</div>
+          <input id="github-url" type="text" placeholder="https://github.com/user/repo" />
+          <button id="github-import-btn" class="btn small">Import repo</button>
+          {% if project.github_url %}
+          <div class="hint">Linked: {{ project.github_url }}</div>
+          {% endif %}
+        </div>
+
+        <div class="settings-group danger-zone">
+          <div class="settings-label">Danger Zone</div>
+          <button id="delete-project-btn" class="btn danger small">Delete project</button>
         </div>
       </div>
 
-      <div class="sidebar-section">
-        <div class="sidebar-section-title">Entry file</div>
-        <input id="entry-file" type="text" placeholder="main.py" value="{{ project.entry_file or '' }}" />
-        <button id="entry-save-btn" class="btn small">Save</button>
-      </div>
     </aside>
 
+    <!-- ===== EDITOR ===== -->
     <section class="editor-pane">
       <div class="editor-tab-bar">
-        <span id="current-file-label">No file open</span>
+        <span id="current-file-label" class="current-file-label">No file open</span>
         <span id="unsaved-dot" class="unsaved-dot hidden" title="Unsaved changes"></span>
         <span id="save-status" class="save-status"></span>
+        <button id="close-file-btn" class="btn small icon-btn" title="Close file" style="display:none">&#x2715;</button>
         <button id="save-btn" class="btn small primary">Save (Ctrl+S)</button>
       </div>
       <textarea id="code-editor" spellcheck="false" placeholder="Select or create a file to start editing..."></textarea>
     </section>
 
+    <!-- ===== LOGS ===== -->
     <section class="terminal-pane">
       <div class="terminal-head">
-        <span>Logs</span>
+        <span class="terminal-title">&#128196; Logs</span>
         <div class="terminal-actions">
-          <label class="errors-only-toggle">
+          <label class="errors-only-toggle" title="Show only errors and warnings">
             <input id="errors-only-toggle" type="checkbox" /> Errors only
+          </label>
+          <label class="errors-only-toggle" title="Auto-scroll to bottom">
+            <input id="autoscroll-toggle" type="checkbox" checked /> Auto-scroll
           </label>
           <button id="clear-logs-btn" class="btn small">Clear</button>
         </div>
       </div>
       <pre id="terminal-output"></pre>
     </section>
+
   </main>
 
   <div id="toast-container" class="toast-container"></div>
