@@ -9,10 +9,8 @@ services:
       - key: ADMIN_KEY
         sync: false
       - key: SECRET_KEY
-        generateValue: true
+        sync: false
+      - key: MONGODB_URI
+        sync: false
       - key: PYTHON_VERSION
         value: "3.11.9"
-    disk:
-      name: codehost-data
-      mountPath: /app/data
-      sizeGB: 1
