@@ -261,12 +261,13 @@ def login_required(view):
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        key = request.form.get("admin_key", "")
-        if hmac.compare_digest(key, ADMIN_KEY):
+        # Accept both field names — some deployed templates use "password", repo uses "admin_key"
+        key = (request.form.get("admin_key") or request.form.get("password") or "").strip()
+        if key and hmac.compare_digest(key, ADMIN_KEY):
             session["authenticated"] = True
             session.permanent = True
             return redirect(url_for("dashboard"))
-        return render_template("login.html", error="Invalid admin key")
+        return render_template("login.html", error="Wrong password. Check your ADMIN_KEY env var on Render.")
     return render_template("login.html", error=None)
 
 
