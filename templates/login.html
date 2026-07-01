@@ -16,10 +16,14 @@
       <p>Admin access only</p>
     </div>
     <div class="login-card">
-      {% if error %}<div class="error-msg">{{ error }}</div>{% endif %}
+      {% if error %}
+      <div class="error-msg" style="color:#f87171;background:rgba(248,113,113,0.1);border:1px solid rgba(248,113,113,0.3);padding:10px 14px;border-radius:8px;margin-bottom:14px;font-size:13px;">
+        ⚠️ {{ error }}
+      </div>
+      {% endif %}
       <form method="POST" action="{{ url_for('login') }}">
-        <input type="password" name="admin_key" placeholder="Admin Key" autofocus required />
-        <button type="submit">Sign in →</button>
+        <input type="password" name="admin_key" placeholder="Enter admin password" autofocus required />
+        <button type="submit">Login →</button>
       </form>
     </div>
   </div>
