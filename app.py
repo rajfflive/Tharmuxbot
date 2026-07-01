@@ -199,19 +199,23 @@ def _restore_all_on_startup():
 # --------------------------------------------------------------------------
 
 PING_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PING_URL", "")
-PING_INTERVAL = int(os.environ.get("PING_INTERVAL_SEC", "240"))
+# Ping every 60 seconds by default — keeps Render free tier fully awake, no sleep
+PING_INTERVAL = int(os.environ.get("PING_INTERVAL_SEC", "60"))
 
 
 def _auto_ping_worker():
     if not PING_URL:
+        print("[auto-ping] Disabled — set RENDER_EXTERNAL_URL to enable")
         return
-    print(f"[auto-ping] Enabled — pinging {PING_URL}/healthz every {PING_INTERVAL}s")
+    url = f"{PING_URL.rstrip('/')}/healthz"
+    print(f"[auto-ping] Enabled — pinging {url} every {PING_INTERVAL}s (no sleep mode)")
     while True:
-        time.sleep(PING_INTERVAL)
         try:
-            requests.get(f"{PING_URL.rstrip('/')}/healthz", timeout=10)
+            r = requests.get(url, timeout=10)
+            print(f"[auto-ping] OK {r.status_code}")
         except Exception as exc:
             print(f"[auto-ping] Error: {exc}")
+        time.sleep(PING_INTERVAL)  # ping FIRST then sleep, so it fires immediately on start
 
 
 threading.Thread(target=_auto_ping_worker, daemon=True).start()
@@ -772,22 +776,53 @@ HOP_BY_HOP_HEADERS = {
     "te", "trailers", "transfer-encoding", "upgrade", "content-encoding", "content-length",
 }
 
-# JS shim template: rewrites absolute-path fetch/XHR calls so bot admin panels work
+# JS shim: rewrites ALL absolute-path URLs so bot admin panels work behind the proxy.
+# Handles: fetch(), XMLHttpRequest, form action attributes, and link hrefs.
 _PROXY_SHIM_TPL = """<script>
 (function(){{
   var B='{base}';
+  function fix(u){{
+    if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(B)&&!u.startsWith('//'))
+      return B+u;
+    return u;
+  }}
+  /* fetch */
   var _f=window.fetch;
-  window.fetch=function(u,o){{
-    if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(B)&&!u.startsWith('//')){{\
-u=B+u;}}
-    return _f.call(this,u,o);
-  }};
+  window.fetch=function(u,o){{return _f.call(this,fix(u),o);}};
+  /* XMLHttpRequest */
   var _xo=XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open=function(m,u){{
-    if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(B)&&!u.startsWith('//')){{\
-u=B+u;}}
-    return _xo.apply(this,arguments);
+    arguments[1]=fix(u);return _xo.apply(this,arguments);
   }};
+  /* Patch form actions and anchor hrefs on DOM ready */
+  function patchDOM(){{
+    document.querySelectorAll('form[action]').forEach(function(f){{
+      f.action=fix(f.getAttribute('action'));
+    }});
+    document.querySelectorAll('a[href]').forEach(function(a){{
+      var h=a.getAttribute('href');
+      if(h&&h.startsWith('/')&&!h.startsWith(B)&&!h.startsWith('//'))
+        a.href=B+h;
+    }});
+  }}
+  if(document.readyState==='loading')
+    document.addEventListener('DOMContentLoaded',patchDOM);
+  else patchDOM();
+  /* MutationObserver: patch dynamic elements added after load */
+  if(window.MutationObserver){{
+    new MutationObserver(function(muts){{
+      muts.forEach(function(m){{
+        m.addedNodes.forEach(function(n){{
+          if(n.querySelectorAll){{
+            n.querySelectorAll('form[action],a[href]').forEach(function(el){{
+              if(el.tagName==='FORM')el.action=fix(el.getAttribute('action'));
+              else{{var h=el.getAttribute('href');if(h&&h.startsWith('/')&&!h.startsWith(B)&&!h.startsWith('//'))el.href=B+h;}}
+            }});
+          }}
+        }});
+      }});
+    }}).observe(document.documentElement,{{childList:true,subtree:true}});
+  }}
 }})();
 </script>"""
 
@@ -886,13 +921,35 @@ def _proxy_request(project, subpath, ident):
             status=502, mimetype="text/plain",
         )
 
-    content_type = upstream.headers.get("content-type", "")
-    response_headers = [
-        (k, v) for k, v in upstream.raw.headers.items()
-        if k.lower() not in HOP_BY_HOP_HEADERS
-    ]
+    # ── Rewrite Location header so server-side redirects stay inside the proxy ──
+    # e.g. bot redirects to /admin/dashboard → rewrite to /pub/{ident}/admin/dashboard
+    loc = upstream.headers.get("Location", "")
+    if loc and loc.startswith("/") and not loc.startswith(f"/pub/{ident}"):
+        upstream.headers["Location"] = f"/pub/{ident}{loc}"
 
-    # Inject shim into HTML responses so bot admin panels work correctly
+    # ── Build response headers, passing Set-Cookie through correctly ──
+    response_headers = []
+    seen = set()
+    for k, v in upstream.raw.headers.items():
+        kl = k.lower()
+        if kl in HOP_BY_HOP_HEADERS:
+            continue
+        if kl == "location":
+            # Already rewritten above — use the corrected value once
+            if "location" not in seen:
+                response_headers.append(("Location", upstream.headers.get("Location", v)))
+                seen.add("location")
+            continue
+        response_headers.append((k, v))
+
+    content_type = upstream.headers.get("content-type", "")
+
+    # ── If bot returns 4xx on the root path, redirect to /admin automatically ──
+    if not subpath and upstream.status_code in (404, 405):
+        admin_url = f"/pub/{ident}/admin"
+        return redirect(admin_url, 302)
+
+    # ── Inject shim + base-href into ALL HTML responses ──
     if "text/html" in content_type:
         try:
             html = upstream.content.decode(upstream.encoding or "utf-8", errors="replace")
