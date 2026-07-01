@@ -1,6 +1,7 @@
 """
 CodeHost — self-hosted mini PaaS for running your own bots/APIs.
 MongoDB-backed, persistent across restarts. Auto-ping keeps Render awake.
+Proxy injects URL-rewriting shim so bot admin panels work correctly.
 """
 
 import os
@@ -79,12 +80,12 @@ def _config_set(key: str, value):
 
 
 # --------------------------------------------------------------------------
-# Stable SECRET_KEY from MongoDB (prevents session invalidation on restart)
+# Stable SECRET_KEY from MongoDB
 # --------------------------------------------------------------------------
 
 def _get_or_create_secret_key() -> str:
     env_key = os.environ.get("SECRET_KEY", "")
-    if env_key and env_key != "dev-insecure-secret-change-me":
+    if env_key and env_key not in ("", "dev-insecure-secret-change-me"):
         return env_key
     try:
         stored = _config_get("secret_key")
@@ -106,7 +107,7 @@ SECRET_KEY = _get_or_create_secret_key()
 app = Flask(__name__)
 app.config["SECRET_KEY"] = SECRET_KEY
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
-app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 30  # 30 days
+app.config["PERMANENT_SESSION_LIFETIME"] = 60 * 60 * 24 * 30
 
 RUNNING = {}
 RUNNING_LOCK = threading.Lock()
@@ -173,7 +174,6 @@ def mongo_delete_all_files(project_id: str):
 
 
 def _restore_project_to_disk(project_id: str):
-    """Write all MongoDB files for a project to disk (called on startup or before run)."""
     pdir = project_dir(project_id)
     pdir.mkdir(parents=True, exist_ok=True)
     for doc in mongo_list_files(project_id):
@@ -186,7 +186,6 @@ def _restore_project_to_disk(project_id: str):
 
 
 def _restore_all_on_startup():
-    """On startup restore all project files from MongoDB to disk."""
     try:
         db = get_mongo()
         for proj in db.projects.find({}, {"_id": 1}):
@@ -200,7 +199,7 @@ def _restore_all_on_startup():
 # --------------------------------------------------------------------------
 
 PING_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PING_URL", "")
-PING_INTERVAL = int(os.environ.get("PING_INTERVAL_SEC", "240"))  # 4 minutes default
+PING_INTERVAL = int(os.environ.get("PING_INTERVAL_SEC", "240"))
 
 
 def _auto_ping_worker():
@@ -211,17 +210,11 @@ def _auto_ping_worker():
         time.sleep(PING_INTERVAL)
         try:
             requests.get(f"{PING_URL.rstrip('/')}/healthz", timeout=10)
-            print(f"[auto-ping] OK at {datetime.now().strftime('%H:%M:%S')}")
         except Exception as exc:
             print(f"[auto-ping] Error: {exc}")
 
 
 threading.Thread(target=_auto_ping_worker, daemon=True).start()
-
-# --------------------------------------------------------------------------
-# Startup restore
-# --------------------------------------------------------------------------
-
 _restore_all_on_startup()
 
 # --------------------------------------------------------------------------
@@ -306,7 +299,7 @@ def api_create_project():
 
     starter_content = (
         "# Entry point for your project.\n"
-        "# Add your bot/API code here, then hit Run.\n\n"
+        "# Add your code here, then hit Run.\n\n"
         "print(\"Hello from CodeHost!\")\n"
     )
     (pdir / "main.py").write_text(starter_content, encoding="utf-8")
@@ -408,7 +401,6 @@ def api_write_file(project_id):
     if not rel:
         return jsonify({"error": "path required"}), 400
     mongo_save_file(project_id, rel, content)
-    # Also write to disk so it's ready to run
     target = safe_join(project_dir(project_id), rel)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
@@ -469,18 +461,14 @@ def api_github_import(project_id):
         if result.returncode != 0:
             return jsonify({"error": result.stderr.strip() or "git clone failed"}), 400
 
-        # Delete old files from MongoDB (keep env)
         mongo_delete_all_files(project_id)
-
         pdir = project_dir(project_id)
         pdir.mkdir(parents=True, exist_ok=True)
 
         tmp_path = Path(tmpdir)
         entry_file = None
         for path in sorted(tmp_path.rglob("*")):
-            if path.is_dir():
-                continue
-            if ".git" in path.parts:
+            if path.is_dir() or ".git" in path.parts:
                 continue
             rel = str(path.relative_to(tmp_path))
             try:
@@ -488,7 +476,6 @@ def api_github_import(project_id):
             except Exception:
                 continue
             mongo_save_file(project_id, rel, content)
-            # Write to disk
             target = pdir / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
@@ -503,7 +490,7 @@ def api_github_import(project_id):
 
 
 # --------------------------------------------------------------------------
-# API: environment variables (stored in MongoDB projects doc)
+# API: environment variables
 # --------------------------------------------------------------------------
 
 @app.route("/api/projects/<project_id>/env", methods=["GET"])
@@ -580,8 +567,7 @@ def _run_project_thread(project_id: str, entry_file: str, env_vars: dict, intern
     lp = log_path_for(project_id)
     lp.write_text("")
 
-    # Restore files from MongoDB to disk before running
-    _append_log(project_id, "Restoring project files ...")
+    _append_log(project_id, "Restoring project files from database ...")
     _restore_project_to_disk(project_id)
 
     run_env = os.environ.copy()
@@ -648,7 +634,6 @@ def api_run_project(project_id):
     pdir.mkdir(parents=True, exist_ok=True)
     entry_file = _detect_entry(pdir, proj.get("entry_file"))
     if not entry_file:
-        # Try detecting from MongoDB file list
         docs = mongo_list_files(project_id)
         paths = [d["path"] for d in docs]
         for candidate in RUN_ENTRY_CANDIDATES:
@@ -723,10 +708,6 @@ def api_get_status(project_id):
     return jsonify({"running": project_id in RUNNING})
 
 
-# --------------------------------------------------------------------------
-# Ping config API
-# --------------------------------------------------------------------------
-
 @app.route("/api/ping-config", methods=["GET"])
 @login_required
 def api_ping_config():
@@ -760,13 +741,50 @@ def api_download_project(project_id):
 
 
 # --------------------------------------------------------------------------
-# Public URL proxy
+# Public URL proxy — with HTML URL-rewriting shim injection
 # --------------------------------------------------------------------------
 
 HOP_BY_HOP_HEADERS = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "content-encoding", "content-length",
 }
+
+# JS shim template: rewrites absolute-path fetch/XHR calls so bot admin panels work
+_PROXY_SHIM_TPL = """<script>
+(function(){{
+  var B='{base}';
+  var _f=window.fetch;
+  window.fetch=function(u,o){{
+    if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(B)&&!u.startsWith('//')){{\
+u=B+u;}}
+    return _f.call(this,u,o);
+  }};
+  var _xo=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(m,u){{
+    if(typeof u==='string'&&u.startsWith('/')&&!u.startsWith(B)&&!u.startsWith('//')){{\
+u=B+u;}}
+    return _xo.apply(this,arguments);
+  }};
+}})();
+</script>"""
+
+
+def _inject_proxy_shim(html: str, ident: str) -> str:
+    """Inject <base href> and a fetch/XHR URL-rewriting shim into an HTML page."""
+    base = f"/pub/{ident}"
+    base_tag = f'<base href="{base}/">'
+    shim = _PROXY_SHIM_TPL.format(base=base)
+    inject = base_tag + shim
+    # Try to inject right after <head>
+    for tag in ("<head>", "<Head>", "<HEAD>"):
+        if tag in html:
+            return html.replace(tag, tag + inject, 1)
+    # Fallback: inject before </head>
+    for tag in ("</head>", "</Head>", "</HEAD>"):
+        if tag in html:
+            return html.replace(tag, inject + tag, 1)
+    # Last resort: prepend
+    return inject + html
 
 
 def _find_project_by_ident(ident: str):
@@ -777,10 +795,11 @@ def _find_project_by_ident(ident: str):
     return proj
 
 
-def _proxy_request(project, subpath):
+def _proxy_request(project, subpath, ident):
     if project["id"] not in RUNNING:
         return Response(
-            "This project isn't running right now. Open it in CodeHost and hit Run.",
+            "⚠️  This project isn't running right now.\n"
+            "Open it in CodeHost and hit ▶ Run, then reload this URL.",
             status=503, mimetype="text/plain",
         )
 
@@ -803,17 +822,29 @@ def _proxy_request(project, subpath):
         )
     except requests.exceptions.ConnectionError:
         return Response(
-            "Project is starting or not listening on the expected port. "
-            "Make sure it binds to 0.0.0.0 and reads the PORT env var.",
+            "⚠️  Project is starting up or not bound to the expected port.\n"
+            "Make sure it listens on 0.0.0.0 and reads the PORT environment variable.",
             status=502, mimetype="text/plain",
         )
     except requests.exceptions.Timeout:
-        return Response("Upstream project timed out.", status=504, mimetype="text/plain")
+        return Response("⚠️  Upstream project timed out.", status=504, mimetype="text/plain")
 
+    content_type = upstream.headers.get("content-type", "")
     response_headers = [
         (k, v) for k, v in upstream.raw.headers.items()
         if k.lower() not in HOP_BY_HOP_HEADERS
     ]
+
+    # Inject shim into HTML responses so bot admin panels work correctly
+    if "text/html" in content_type:
+        try:
+            html = upstream.content.decode(upstream.encoding or "utf-8", errors="replace")
+            html = _inject_proxy_shim(html, ident)
+            return Response(html, status=upstream.status_code, headers=response_headers,
+                            content_type="text/html; charset=utf-8")
+        except Exception:
+            pass
+
     return Response(upstream.content, status=upstream.status_code, headers=response_headers)
 
 
@@ -822,7 +853,7 @@ def public_proxy_root(ident):
     project = _find_project_by_ident(ident)
     if not project:
         abort(404)
-    return _proxy_request(project, "")
+    return _proxy_request(project, "", ident)
 
 
 @app.route("/pub/<ident>/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
@@ -830,11 +861,11 @@ def public_proxy(ident, subpath):
     project = _find_project_by_ident(ident)
     if not project:
         abort(404)
-    return _proxy_request(project, subpath)
+    return _proxy_request(project, subpath, ident)
 
 
 # --------------------------------------------------------------------------
-# Health / ping endpoints
+# Health endpoints
 # --------------------------------------------------------------------------
 
 @app.route("/healthz")
