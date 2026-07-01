@@ -442,10 +442,17 @@
 
   function lineClass(line) {
     const l = line.toLowerCase();
-    if (l.includes("error") || l.includes("exception") || l.includes("traceback") || l.includes("failed")) return "log-err";
-    if (l.includes("warn")) return "log-warn";
+    // Error patterns: explicit [ERROR]/[CRASH] tags + common Python/Node crash keywords
+    if (
+      l.includes("[error]") || l.includes("[crash]") ||
+      l.includes("address already in use") || l.includes("port") && l.includes("in use") ||
+      l.includes("error") || l.includes("exception") || l.includes("traceback") ||
+      l.includes("failed") || l.includes("errno") || l.includes("fatal") ||
+      l.includes("crashed") || l.includes("kill")
+    ) return "log-err";
+    if (l.includes("[warn]") || l.includes("warn")) return "log-warn";
     if (line.startsWith("[") && (l.includes("starting:") || l.includes("process exited") ||
-        l.includes("installing") || l.includes("restoring"))) return "log-sys";
+        l.includes("installing") || l.includes("restoring") || l.includes("reassigned"))) return "log-sys";
     if (l.includes("success") || l.includes("started") || l.includes("running")) return "log-ok";
     return "";
   }
