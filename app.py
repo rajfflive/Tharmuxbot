@@ -19,6 +19,7 @@ kept in memory. See Procfile.
 import os
 import io
 import json
+import re
 import shutil
 import sqlite3
 import hmac
@@ -30,9 +31,10 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
 from flask import (
     Flask, request, session, redirect, url_for, render_template,
-    jsonify, send_file, abort, g
+    jsonify, send_file, abort, g, Response
 )
 
 # --------------------------------------------------------------------------
@@ -93,9 +95,34 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    # Lightweight migrations for columns added after the initial release.
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
+    if "slug" not in existing_cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN slug TEXT")
+    if "internal_port" not in existing_cols:
+        conn.execute("ALTER TABLE projects ADD COLUMN internal_port INTEGER")
+    conn.commit()
+
+    # Backfill slug/internal_port for any pre-existing rows.
+    rows = conn.execute(
+        "SELECT id FROM projects WHERE slug IS NULL OR internal_port IS NULL"
+    ).fetchall()
+    for (pid,) in rows:
+        conn.execute(
+            "UPDATE projects SET slug = COALESCE(slug, ?), internal_port = COALESCE(internal_port, ?) WHERE id = ?",
+            (pid, _next_free_port(conn), pid),
+        )
     conn.commit()
     conn.close()
 
+
+def _next_free_port(conn) -> int:
+    row = conn.execute("SELECT MAX(internal_port) FROM projects").fetchone()
+    current_max = row[0] if row and row[0] else BASE_PORT - 1
+    return max(current_max + 1, BASE_PORT)
+
+
+BASE_PORT = 6000
 
 init_db()
 
@@ -179,12 +206,25 @@ def project_page(project_id):
         abort(404)
     project = dict(row)
     project["running"] = project_id in RUNNING
+    ident = project.get("slug") or project_id
+    project["public_url"] = request.host_url.rstrip("/") + url_for("public_proxy_root", ident=ident)
     return render_template("project.html", project=project)
 
 
 # --------------------------------------------------------------------------
 # API: projects CRUD
 # --------------------------------------------------------------------------
+
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,40}$")
+
+
+def _slug_taken(db, slug: str, exclude_id: str | None = None) -> bool:
+    row = db.execute(
+        "SELECT id FROM projects WHERE slug = ? AND id != ?",
+        (slug, exclude_id or ""),
+    ).fetchone()
+    return row is not None
+
 
 @app.route("/api/projects", methods=["POST"])
 @login_required
@@ -198,18 +238,38 @@ def api_create_project():
     starter = pdir / "main.py"
     starter.write_text(
         "# Entry point for your project.\n"
-        "# Add your bot/API code here, then hit Run.\n\n"
+        "# Add your bot/API code here, then hit Run.\n"
+        "# If this is a web server, bind to 0.0.0.0 and read the PORT env var\n"
+        "# so it works with CodeHost's public URL proxy, e.g.:\n"
+        "#   app.run(host=\"0.0.0.0\", port=int(os.environ.get(\"PORT\", 5000)))\n\n"
         "print(\"Hello from CodeHost!\")\n"
     )
 
     db = get_db()
+    internal_port = _next_free_port(db)
     db.execute(
-        "INSERT INTO projects (id, name, entry_file, github_url, env_json, status, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (project_id, name, "main.py", None, "{}", "stopped", datetime.now(timezone.utc).isoformat()),
+        "INSERT INTO projects (id, name, entry_file, github_url, env_json, status, created_at, slug, internal_port) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (project_id, name, "main.py", None, "{}", "stopped", datetime.now(timezone.utc).isoformat(),
+         project_id, internal_port),
     )
     db.commit()
     return jsonify({"id": project_id, "name": name}), 201
+
+
+@app.route("/api/projects/<project_id>/slug", methods=["POST"])
+@login_required
+def api_set_slug(project_id):
+    data = request.get_json(force=True, silent=True) or {}
+    slug = (data.get("slug") or "").strip().lower()
+    if not SLUG_RE.match(slug):
+        return jsonify({"error": "Use 2-40 lowercase letters, numbers or dashes, starting with a letter/number"}), 400
+    db = get_db()
+    if _slug_taken(db, slug, exclude_id=project_id):
+        return jsonify({"error": "That public URL name is already taken"}), 400
+    db.execute("UPDATE projects SET slug = ? WHERE id = ?", (slug, project_id))
+    db.commit()
+    return jsonify({"ok": True, "slug": slug})
 
 
 @app.route("/api/projects/<project_id>", methods=["DELETE"])
@@ -455,7 +515,7 @@ def _detect_entry(pdir: Path, configured: str | None) -> str | None:
     return None
 
 
-def _run_project_thread(project_id: str, entry_file: str, env_vars: dict):
+def _run_project_thread(project_id: str, entry_file: str, env_vars: dict, internal_port: int):
     pdir = project_dir(project_id)
     lp = log_path_for(project_id)
     lp.write_text("")  # reset log
@@ -463,6 +523,8 @@ def _run_project_thread(project_id: str, entry_file: str, env_vars: dict):
     run_env = os.environ.copy()
     run_env.update(env_vars)
     run_env["PYTHONUNBUFFERED"] = "1"
+    run_env["PORT"] = str(internal_port)
+    run_env["HOST"] = "0.0.0.0"
 
     requirements = pdir / "requirements.txt"
     if requirements.exists():
@@ -529,9 +591,10 @@ def api_run_project(project_id):
         return jsonify({"error": "No entry file found (expected main.py, bot.py, app.py, run.py, server.py or index.js)"}), 400
 
     env_vars = json.loads(row["env_json"] or "{}")
+    internal_port = row["internal_port"] or _next_free_port(db)
 
     thread = threading.Thread(
-        target=_run_project_thread, args=(project_id, entry_file, env_vars), daemon=True
+        target=_run_project_thread, args=(project_id, entry_file, env_vars, internal_port), daemon=True
     )
     thread.start()
     time.sleep(0.3)  # give the thread a moment to register in RUNNING
@@ -609,6 +672,78 @@ def api_download_project(project_id):
         buf, mimetype="application/zip", as_attachment=True,
         download_name=f"{name}.zip",
     )
+
+
+# --------------------------------------------------------------------------
+# Public URL proxy — expose a running project's own web server publicly
+# --------------------------------------------------------------------------
+
+HOP_BY_HOP_HEADERS = {
+    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+    "te", "trailers", "transfer-encoding", "upgrade", "content-encoding", "content-length",
+}
+
+
+def _find_project_by_ident(ident: str):
+    db = get_db()
+    row = db.execute("SELECT * FROM projects WHERE slug = ? OR id = ?", (ident, ident)).fetchone()
+    return dict(row) if row else None
+
+
+def _proxy_request(project, subpath):
+    if project["id"] not in RUNNING:
+        return Response(
+            "This project isn't running right now. Open it in CodeHost and hit Run, "
+            "then reload this URL.",
+            status=503, mimetype="text/plain",
+        )
+
+    port = project["internal_port"]
+    target_url = f"http://127.0.0.1:{port}/{subpath}"
+    if request.query_string:
+        target_url += "?" + request.query_string.decode("utf-8")
+
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host",)}
+
+    try:
+        upstream = requests.request(
+            method=request.method,
+            url=target_url,
+            headers=headers,
+            data=request.get_data(),
+            cookies=request.cookies,
+            allow_redirects=False,
+            timeout=30,
+        )
+    except requests.exceptions.ConnectionError:
+        return Response(
+            "The project is starting up or not listening on the expected port yet. "
+            "Make sure it binds to host 0.0.0.0 and reads the PORT environment variable.",
+            status=502, mimetype="text/plain",
+        )
+    except requests.exceptions.Timeout:
+        return Response("Upstream project timed out.", status=504, mimetype="text/plain")
+
+    response_headers = [
+        (k, v) for k, v in upstream.raw.headers.items() if k.lower() not in HOP_BY_HOP_HEADERS
+    ]
+    return Response(upstream.content, status=upstream.status_code, headers=response_headers)
+
+
+@app.route("/pub/<ident>/", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def public_proxy_root(ident):
+    project = _find_project_by_ident(ident)
+    if not project:
+        abort(404)
+    return _proxy_request(project, "")
+
+
+@app.route("/pub/<ident>/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+def public_proxy(ident, subpath):
+    project = _find_project_by_ident(ident)
+    if not project:
+        abort(404)
+    return _proxy_request(project, subpath)
 
 
 # --------------------------------------------------------------------------
