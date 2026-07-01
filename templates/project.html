@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ project.name }} — CodeHost</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><a href="/">CodeHost</a></div>
+    <div class="topbar-actions">
+      <span id="run-status" class="status-pill {{ 'running' if project.running else 'stopped' }}">
+        {{ 'running' if project.running else 'stopped' }}
+      </span>
+      <button id="run-btn" class="btn primary">Run</button>
+      <button id="stop-btn" class="btn danger">Stop</button>
+      <a class="btn" id="download-btn" href="/api/projects/{{ project.id }}/download">Download ZIP</a>
+      <a class="logout-link" href="{{ url_for('logout') }}">Log out</a>
+    </div>
+  </header>
+
+  <main class="project-layout" data-project-id="{{ project.id }}">
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <h2>{{ project.name }}</h2>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Files</div>
+        <ul id="file-list" class="file-list"></ul>
+        <div class="sidebar-buttons">
+          <button id="new-file-btn" class="btn small">+ New file</button>
+          <label class="btn small file-upload-label">
+            Upload
+            <input id="upload-input" type="file" multiple hidden />
+          </label>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">GitHub Import</div>
+        <input id="github-url" type="text" placeholder="https://github.com/user/repo.git" />
+        <button id="github-import-btn" class="btn small">Import repo</button>
+        {% if project.github_url %}<div class="hint">Linked: {{ project.github_url }}</div>{% endif %}
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Environment Variables</div>
+        <div id="env-list"></div>
+        <div class="env-row">
+          <input id="env-key" type="text" placeholder="KEY" />
+          <input id="env-value" type="text" placeholder="value" />
+          <button id="env-add-btn" class="btn small">Add</button>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">Entry file</div>
+        <input id="entry-file" type="text" placeholder="main.py" value="{{ project.entry_file or '' }}" />
+        <button id="entry-save-btn" class="btn small">Save</button>
+      </div>
+    </aside>
+
+    <section class="editor-pane">
+      <div class="editor-tab-bar">
+        <span id="current-file-label">No file open</span>
+        <span id="unsaved-dot" class="unsaved-dot hidden"></span>
+        <button id="save-btn" class="btn small">Save (Ctrl+S)</button>
+      </div>
+      <textarea id="code-editor" spellcheck="false" placeholder="Select or create a file to start editing..."></textarea>
+    </section>
+
+    <section class="terminal-pane">
+      <div class="terminal-head">Logs</div>
+      <pre id="terminal-output"></pre>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

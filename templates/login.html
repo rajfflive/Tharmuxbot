@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodeHost — Admin Login</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <h1>CodeHost</h1>
+    <p class="subtitle">Admin access only</p>
+    {% if error %}<div class="error-msg">{{ error }}</div>{% endif %}
+    <form method="POST" action="{{ url_for('login') }}">
+      <input type="password" name="admin_key" placeholder="Admin key" autofocus required />
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+</body>
+</html>
