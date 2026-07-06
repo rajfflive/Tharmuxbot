@@ -2,6 +2,11 @@
 CodeHost — self-hosted mini PaaS for running your own bots/APIs.
 MongoDB-backed, persistent across restarts. Auto-ping keeps Render awake.
 Proxy injects URL-rewriting shim so bot admin panels work correctly.
+
+FIXES:
+- Old .session files are wiped before every run so new STRING_SESSION works cleanly.
+- __pycache__ is cleared before every run to avoid stale bytecode.
+- All API responses carry Cache-Control: no-store so nothing is cached by browsers/proxies.
 """
 
 import os
@@ -121,6 +126,19 @@ _PORT_LOCK = threading.Lock()
 
 
 # --------------------------------------------------------------------------
+# No-cache headers on ALL responses
+# This prevents browsers and proxies from caching any API response.
+# --------------------------------------------------------------------------
+
+@app.after_request
+def apply_no_cache(response):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
+
+# --------------------------------------------------------------------------
 # Project helpers
 # --------------------------------------------------------------------------
 
@@ -168,6 +186,65 @@ def _next_free_port() -> int:
 
 
 # --------------------------------------------------------------------------
+# Session & cache cleanup — called before every project run
+# --------------------------------------------------------------------------
+
+def _clean_session_and_cache(pdir: Path, project_id: str):
+    """
+    Delete all Telethon/Pyrogram session files and Python bytecode caches
+    from the project directory.
+
+    WHY: If a STRING_SESSION is set as an env var, Telethon uses it to create
+    a new auth key. But if an old .session file also exists on disk, Telethon
+    or Pyrogram may load it instead — or Telegram detects two different auth
+    keys being used from different IPs and kills both with:
+      "The authorization key was used under two different IP addresses simultaneously."
+
+    Deleting .session / .session-journal / __pycache__ before every run ensures
+    only the current STRING_SESSION env var is used, so a fresh session is always
+    created cleanly.
+    """
+    deleted = []
+
+    # --- Telethon session files ---
+    for f in pdir.rglob("*.session"):
+        try:
+            f.unlink()
+            deleted.append(str(f.relative_to(pdir)))
+        except Exception:
+            pass
+
+    # --- Telethon session journal files ---
+    for f in pdir.rglob("*.session-journal"):
+        try:
+            f.unlink()
+            deleted.append(str(f.relative_to(pdir)))
+        except Exception:
+            pass
+
+    # --- Pyrogram session files ---
+    for f in pdir.rglob("*.session.db"):
+        try:
+            f.unlink()
+            deleted.append(str(f.relative_to(pdir)))
+        except Exception:
+            pass
+
+    # --- Python bytecode cache (avoids stale .pyc issues) ---
+    for cache_dir in pdir.rglob("__pycache__"):
+        try:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            deleted.append(str(cache_dir.relative_to(pdir)) + "/")
+        except Exception:
+            pass
+
+    if deleted:
+        _append_log(project_id, f"[session-clean] Removed stale files: {', '.join(deleted)}")
+    else:
+        _append_log(project_id, "[session-clean] No stale session/cache files found.")
+
+
+# --------------------------------------------------------------------------
 # File storage in MongoDB
 # --------------------------------------------------------------------------
 
@@ -203,6 +280,9 @@ def _restore_project_to_disk(project_id: str):
     pdir = project_dir(project_id)
     pdir.mkdir(parents=True, exist_ok=True)
     for doc in mongo_list_files(project_id):
+        # Never restore .session files — always use fresh STRING_SESSION from env
+        if doc["path"].endswith(".session") or doc["path"].endswith(".session-journal"):
+            continue
         target = pdir / doc["path"]
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -225,7 +305,6 @@ def _restore_all_on_startup():
 # --------------------------------------------------------------------------
 
 PING_URL = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PING_URL", "")
-# Ping every 60 seconds by default — keeps Render free tier fully awake, no sleep
 PING_INTERVAL = int(os.environ.get("PING_INTERVAL_SEC", "60"))
 
 
@@ -241,7 +320,7 @@ def _auto_ping_worker():
             print(f"[auto-ping] OK {r.status_code}")
         except Exception as exc:
             print(f"[auto-ping] Error: {exc}")
-        time.sleep(PING_INTERVAL)  # ping FIRST then sleep, so it fires immediately on start
+        time.sleep(PING_INTERVAL)
 
 
 threading.Thread(target=_auto_ping_worker, daemon=True).start()
@@ -266,7 +345,6 @@ def login_required(view):
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        # Accept both field names — some deployed templates use "password", repo uses "admin_key"
         key = (request.form.get("admin_key") or request.form.get("password") or "").strip()
         if key and hmac.compare_digest(key, ADMIN_KEY):
             session["authenticated"] = True
@@ -339,8 +417,6 @@ def api_create_project():
     internal_port = _next_free_port()
     db = get_mongo()
 
-    # Auto-derive slug from project name so the public URL is human-readable.
-    # e.g. name "My Bot" → slug "my-bot" → /pub/my-bot/
     slug_base = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or project_id
     slug = slug_base
     suffix = 1
@@ -441,6 +517,9 @@ def api_write_file(project_id):
     content = data.get("content", "")
     if not rel:
         return jsonify({"error": "path required"}), 400
+    # Never store session files in MongoDB — they must always come from env vars
+    if rel.endswith(".session") or rel.endswith(".session-journal"):
+        return jsonify({"error": "Session files cannot be stored. Use STRING_SESSION env var instead."}), 400
     mongo_save_file(project_id, rel, content)
     target = safe_join(project_dir(project_id), rel)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -466,15 +545,20 @@ def api_upload_files(project_id):
     pdir.mkdir(parents=True, exist_ok=True)
     uploaded = request.files.getlist("files")
     saved = []
+    skipped = []
     for f in uploaded:
         rel_path = f.filename or "file.txt"
+        # Skip session files — they must come from env vars only
+        if rel_path.endswith(".session") or rel_path.endswith(".session-journal"):
+            skipped.append(rel_path)
+            continue
         content = f.read().decode("utf-8", errors="replace")
         mongo_save_file(project_id, rel_path, content)
         target = safe_join(pdir, rel_path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         saved.append(rel_path)
-    return jsonify({"ok": True, "saved": saved})
+    return jsonify({"ok": True, "saved": saved, "skipped": skipped})
 
 
 # --------------------------------------------------------------------------
@@ -511,6 +595,9 @@ def api_github_import(project_id):
         for path in sorted(tmp_path.rglob("*")):
             if path.is_dir() or ".git" in path.parts:
                 continue
+            # Skip session files from repos too
+            if path.name.endswith(".session") or path.name.endswith(".session-journal"):
+                continue
             rel = str(path.relative_to(tmp_path))
             try:
                 content = path.read_text(encoding="utf-8", errors="replace")
@@ -527,8 +614,6 @@ def api_github_import(project_id):
     proj = db.projects.find_one({"_id": project_id}, {"slug": 1})
     update_fields = {"github_url": repo_url, "entry_file": entry_file or "main.py"}
 
-    # If the project's slug is still its UUID (never manually set), auto-derive
-    # it from the repo name so the public URL becomes human-readable.
     if proj and proj.get("slug") == project_id:
         repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")
         slug_base = re.sub(r"[^a-z0-9]+", "-", repo_name.lower()).strip("-")[:40] or project_id
@@ -629,6 +714,11 @@ def _run_project_thread(project_id: str, entry_file: str, env_vars: dict, intern
     _append_log(project_id, "Restoring project files from database ...")
     _restore_project_to_disk(project_id)
 
+    # ── KEY FIX: wipe old session files so new STRING_SESSION works cleanly ──
+    # Without this, Telethon finds the old .session file on disk and Telegram
+    # detects two different auth keys from different IPs → kills the session.
+    _clean_session_and_cache(pdir, project_id)
+
     run_env = os.environ.copy()
     run_env.update(env_vars)
     run_env["PYTHONUNBUFFERED"] = "1"
@@ -662,7 +752,6 @@ def _run_project_thread(project_id: str, entry_file: str, env_vars: dict, intern
         _append_log(project_id, f"[WARN] Port {internal_port} is in use — finding a free port...")
         try:
             new_port = _next_free_port()
-            # Update DB so public proxy uses the new port
             get_mongo().projects.update_one({"_id": project_id}, {"$set": {"internal_port": new_port}})
             internal_port = new_port
             run_env["PORT"] = str(internal_port)
@@ -808,6 +897,9 @@ def api_download_project(project_id):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for doc in mongo_list_files(project_id):
+            # Don't include session files in downloads
+            if doc["path"].endswith(".session") or doc["path"].endswith(".session-journal"):
+                continue
             zf.writestr(doc["path"], doc.get("content", ""))
     buf.seek(0)
     return send_file(
@@ -825,8 +917,6 @@ HOP_BY_HOP_HEADERS = {
     "te", "trailers", "transfer-encoding", "upgrade", "content-encoding", "content-length",
 }
 
-# JS shim: rewrites ALL absolute-path URLs so bot admin panels work behind the proxy.
-# Handles: fetch(), XMLHttpRequest, form action attributes, and link hrefs.
 _PROXY_SHIM_TPL = """<script>
 (function(){{
   var B='{base}';
@@ -835,15 +925,12 @@ _PROXY_SHIM_TPL = """<script>
       return B+u;
     return u;
   }}
-  /* fetch */
   var _f=window.fetch;
   window.fetch=function(u,o){{return _f.call(this,fix(u),o);}};
-  /* XMLHttpRequest */
   var _xo=XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open=function(m,u){{
     arguments[1]=fix(u);return _xo.apply(this,arguments);
   }};
-  /* Patch form actions and anchor hrefs on DOM ready */
   function patchDOM(){{
     document.querySelectorAll('form[action]').forEach(function(f){{
       f.action=fix(f.getAttribute('action'));
@@ -857,7 +944,6 @@ _PROXY_SHIM_TPL = """<script>
   if(document.readyState==='loading')
     document.addEventListener('DOMContentLoaded',patchDOM);
   else patchDOM();
-  /* MutationObserver: patch dynamic elements added after load */
   if(window.MutationObserver){{
     new MutationObserver(function(muts){{
       muts.forEach(function(m){{
@@ -877,20 +963,16 @@ _PROXY_SHIM_TPL = """<script>
 
 
 def _inject_proxy_shim(html: str, ident: str) -> str:
-    """Inject <base href> and a fetch/XHR URL-rewriting shim into an HTML page."""
     base = f"/pub/{ident}"
     base_tag = f'<base href="{base}/">'
     shim = _PROXY_SHIM_TPL.format(base=base)
     inject = base_tag + shim
-    # Try to inject right after <head>
     for tag in ("<head>", "<Head>", "<HEAD>"):
         if tag in html:
             return html.replace(tag, tag + inject, 1)
-    # Fallback: inject before </head>
     for tag in ("</head>", "</Head>", "</HEAD>"):
         if tag in html:
             return html.replace(tag, inject + tag, 1)
-    # Last resort: prepend
     return inject + html
 
 
@@ -903,7 +985,6 @@ def _find_project_by_ident(ident: str):
 
 
 def _proc_alive(project_id: str) -> bool:
-    """Return True if the process is in RUNNING and still alive."""
     with RUNNING_LOCK:
         entry = RUNNING.get(project_id)
     if not entry:
@@ -929,7 +1010,6 @@ def _proxy_request(project, subpath, ident):
 
     headers = {k: v for k, v in request.headers.items() if k.lower() != "host"}
 
-    # Retry a few times to handle slow startup (pip install, Telethon init, etc.)
     last_conn_err = None
     for attempt in range(4):
         try:
@@ -952,12 +1032,11 @@ def _proxy_request(project, subpath, ident):
             return Response("⚠️  Upstream project timed out.", status=504, mimetype="text/plain")
 
     if last_conn_err is not None:
-        # Check whether the process crashed (already exited) or is still starting
         if not _proc_alive(pid):
             return Response(
                 "⚠️  Project process crashed during startup — check the logs.\n\n"
                 "Most common causes:\n"
-                "  • Missing environment variables (API_ID, API_HASH, API_KEY, etc.)\n"
+                "  • Missing environment variables (API_ID, API_HASH, STRING_SESSION, etc.)\n"
                 "    → Open CodeHost → your project → Env tab → add the required vars → re-run.\n"
                 "  • Syntax error or missing dependency in your code.\n"
                 "    → Check the Logs panel in CodeHost for the full error traceback.\n",
@@ -970,13 +1049,10 @@ def _proxy_request(project, subpath, ident):
             status=502, mimetype="text/plain",
         )
 
-    # ── Rewrite Location header so server-side redirects stay inside the proxy ──
-    # e.g. bot redirects to /admin/dashboard → rewrite to /pub/{ident}/admin/dashboard
     loc = upstream.headers.get("Location", "")
     if loc and loc.startswith("/") and not loc.startswith(f"/pub/{ident}"):
         upstream.headers["Location"] = f"/pub/{ident}{loc}"
 
-    # ── Build response headers, passing Set-Cookie through correctly ──
     response_headers = []
     seen = set()
     for k, v in upstream.raw.headers.items():
@@ -984,15 +1060,11 @@ def _proxy_request(project, subpath, ident):
         if kl in HOP_BY_HOP_HEADERS:
             continue
         if kl == "location":
-            # Already rewritten above — use the corrected value once
             if "location" not in seen:
                 response_headers.append(("Location", upstream.headers.get("Location", v)))
                 seen.add("location")
             continue
         if kl == "set-cookie":
-            # Fix cookie Path so browser sends it back for /pub/{ident}/...
-            # Without this, hosted-app session cookies are scoped to /admin but
-            # the browser accesses /pub/{ident}/admin → cookies never sent → infinite login loop
             v = re.sub(r';\s*[Pp]ath=[^;,]+', '; Path=/', v)
             if 'path=' not in v.lower():
                 v = v.rstrip(';') + '; Path=/'
@@ -1000,12 +1072,10 @@ def _proxy_request(project, subpath, ident):
 
     content_type = upstream.headers.get("content-type", "")
 
-    # ── If bot returns 4xx on the root path, redirect to /admin automatically ──
     if not subpath and upstream.status_code in (404, 405):
         admin_url = f"/pub/{ident}/admin"
         return redirect(admin_url, 302)
 
-    # ── Inject shim + base-href into ALL HTML responses ──
     if "text/html" in content_type:
         try:
             html = upstream.content.decode(upstream.encoding or "utf-8", errors="replace")
@@ -1019,7 +1089,6 @@ def _proxy_request(project, subpath, ident):
 
 
 def _proxy_not_found(ident: str):
-    """Helpful 404 instead of a blank Flask error page."""
     host = request.host_url.rstrip("/")
     body = (
         f"⚠️  No project found at /pub/{ident}/\n\n"
